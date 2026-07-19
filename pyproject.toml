@@ -1,0 +1,39 @@
+[project]
+name = "filever"
+version = "0.1.0"
+description = "Discover, parse, and manipulate v-prefixed version numbers embedded in filesystem paths."
+readme = "README.md"
+authors = [
+    { name = "John Martini", email = "jokermartini@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.22,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplify
+    "RUF", # ruff-specific
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
