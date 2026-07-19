@@ -78,6 +78,36 @@ next_version(seed, exists=False)      # 16  (just current + 1, no disk check)
 
 Disk scans use the **shallowest** version-bearing part as the anchor. For a path like `/projects/assets/character_v003.mp4` (version only in filename), it lists siblings in the same directory. Symlinks are skipped by default; pass `include_symlinks=True` to include them (deduped against real targets).
 
+### Iterate over versions on disk with full info
+
+`find_on_disk` returns `DiskVersion` objects that carry both the version number and the reconstructed path:
+
+```python
+from filever import discover, find_on_disk
+
+pv = discover("/publish/v015/model/char_geo_v015.abc")
+for dv in find_on_disk(pv):
+    print(f"v{dv.value:03d} → {dv.path} (symlink={dv.is_symlink})")
+```
+
+```
+v015 → /publish/v015/model/char_geo_v015.abc (symlink=False)
+v016 → /publish/v016/model/char_geo_v016.abc (symlink=False)
+v017 → /publish/v017/model/char_geo_v017.abc (symlink=False)
+v020 → /publish/v020/model/char_geo_v020.abc (symlink=False)
+```
+
+### `pv.versions` vs disk queries
+
+`pv.versions` and the disk-scan functions answer *different* questions. `pv.versions` reports what version tokens appear inside the single path string you gave it — no filesystem access. The disk functions read the filesystem and report which versions of the asset actually exist there.
+
+| Question | Use |
+|---|---|
+| What versions are written into this one filepath? | `pv.versions` |
+| What versions of this asset exist on disk? | `list_on_disk(pv)` or `find_on_disk(pv)` |
+| What's the newest one on disk? | `latest_on_disk(pv)` |
+| What's the next slot to save into? | `next_version(pv, exists=False)` |
+
 ## Errors
 
 - `AmbiguousVersion` — grouped op on a mismatched path with no `driver=`.

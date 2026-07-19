@@ -8,7 +8,9 @@ from filever import (
     UnresolvedPlaceholder,
 )
 from filever.disk import (
+    DiskVersion,
     earliest_on_disk,
+    find_on_disk,
     latest_on_disk,
     list_on_disk,
     next_version,
@@ -30,6 +32,17 @@ def test_list_on_disk_matching_group(publish_tree):
     seed = str(publish_tree / "v015" / "model" / "char_geo_v015.abc")
     result = list_on_disk(seed)
     assert result == [15, 16, 17, 20]
+
+
+def test_find_on_disk_returns_objects(publish_tree):
+    seed = str(publish_tree / "v015" / "model" / "char_geo_v015.abc")
+    result = find_on_disk(seed)
+    assert [dv.value for dv in result] == [15, 16, 17, 20]
+    assert all(isinstance(dv, DiskVersion) for dv in result)
+    assert all(dv.is_symlink is False for dv in result)
+    for dv in result:
+        assert f"v{dv.value:03d}" in dv.path
+        assert dv.path.endswith(f"char_geo_v{dv.value:03d}.abc")
 
 
 def test_latest_and_earliest(publish_tree):
@@ -140,6 +153,20 @@ def test_case_strict_scan(tmp_path):
     (base / "v016" / "char_V016.abc").write_text("")
     seed = str(base / "v015" / "char_V015.abc")
     assert list_on_disk(seed) == [15, 16]
+
+
+def test_case_insensitive_surrounding_text(tmp_path):
+    """Siblings with different case in the surrounding text should still match, and
+    returned paths should preserve the actual on-disk casing."""
+    base = tmp_path
+    (base / "HOW_030_LIGHT_v001.max").write_text("")
+    (base / "HOW_030_LIGHT_v002.max").write_text("")
+    (base / "HOW_030_LIGHT_v003.max").write_text("")
+    (base / "HOW_030_light_v010.max").write_text("")
+    seed = str(base / "HOW_030_LIGHT_v003.max")
+    result = find_on_disk(seed)
+    assert [dv.value for dv in result] == [1, 2, 3, 10]
+    assert result[3].path.endswith("HOW_030_light_v010.max")
 
 
 def test_pad_strict_scan(tmp_path):

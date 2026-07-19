@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 
 from .discover import PathVersions, discover
 from .errors import AmbiguousVersion, NoVersionFound, UnresolvedPlaceholder
 from .rewrite import DriverArg, _global_span, _resolve_driver, _splice
 from .tokens import VersionToken
+
+
+@dataclass(frozen=True)
+class DiskVersion:
+    value: int
+    path: str
+    is_symlink: bool
 
 
 def _to_pv(pv_or_path: PathVersions | str) -> PathVersions:
@@ -36,19 +44,19 @@ def _parent_of_part(pv: PathVersions, token: VersionToken) -> str:
     return parent
 
 
-def _scan_candidate_values(pv: PathVersions, driver: VersionToken) -> set[int]:
+def _scan_candidate_entries(pv: PathVersions, driver: VersionToken) -> dict[int, str]:
     part_text, _ = pv.parts[driver.part_index]
     v_start, v_end = driver.span
     prefix = re.escape(part_text[:v_start] + driver.case)
     suffix = re.escape(part_text[v_end:])
-    entry_re = re.compile(f"^{prefix}(\\d+){suffix}$")
+    entry_re = re.compile(f"^{prefix}(\\d+){suffix}$", re.IGNORECASE)
     parent = _parent_of_part(pv, driver)
     try:
         entries = os.listdir(parent)
     except OSError:
-        return set()
-    found: set[int] = set()
-    for entry in entries:
+        return {}
+    found: dict[int, str] = {}
+    for entry in sorted(entries):
         m = entry_re.match(entry)
         if not m:
             continue
@@ -56,7 +64,8 @@ def _scan_candidate_values(pv: PathVersions, driver: VersionToken) -> set[int]:
         value = int(digits)
         if digits != f"{value:0{driver.pad}d}":
             continue
-        found.add(value)
+        if value not in found:
+            found[value] = entry
     return found
 
 
@@ -80,23 +89,29 @@ def _driver_and_group(
     return driver_token, group
 
 
-def list_on_disk(
+def find_on_disk(
     pv_or_path: PathVersions | str,
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
-) -> list[int]:
+) -> list[DiskVersion]:
     pv = _to_pv(pv_or_path)
     _check_no_placeholders(pv)
     driver_token, group = _driver_and_group(pv, driver)
-    candidates = _scan_candidate_values(pv, driver_token)
+    candidates = _scan_candidate_entries(pv, driver_token)
     if not candidates:
         return []
-    result: list[int] = []
+    driver_part_text, driver_part_offset = pv.parts[driver_token.part_index]
+    driver_part_end = driver_part_offset + len(driver_part_text)
+    result: list[DiskVersion] = []
     seen_reals: set[str] = set()
     for value in sorted(candidates):
-        edits = [(*_global_span(pv, t), t.format(value)) for t in group]
-        candidate_path = _splice(pv.path, edits)
+        entry_name = candidates[value]
+        driver_edit = (driver_part_offset, driver_part_end, entry_name)
+        other_edits = [
+            (*_global_span(pv, t), t.format(value)) for t in group if t is not driver_token
+        ]
+        candidate_path = _splice(pv.path, [driver_edit, *other_edits])
         if not os.path.exists(candidate_path):
             continue
         is_link = os.path.islink(candidate_path)
@@ -106,8 +121,20 @@ def list_on_disk(
         if real in seen_reals:
             continue
         seen_reals.add(real)
-        result.append(value)
+        result.append(DiskVersion(value=value, path=candidate_path, is_symlink=is_link))
     return result
+
+
+def list_on_disk(
+    pv_or_path: PathVersions | str,
+    *,
+    driver: DriverArg = None,
+    include_symlinks: bool = False,
+) -> list[int]:
+    return [
+        dv.value
+        for dv in find_on_disk(pv_or_path, driver=driver, include_symlinks=include_symlinks)
+    ]
 
 
 def latest_on_disk(

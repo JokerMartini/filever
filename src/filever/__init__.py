@@ -1,4 +1,5 @@
 from .discover import PathVersions, discover
+from .disk import DiskVersion, find_on_disk
 from .errors import (
     AmbiguousVersion,
     FileverError,
@@ -11,6 +12,7 @@ from .tokens import PlaceholderNotation, PlaceholderToken, TokenClass, VersionTo
 
 __all__ = [
     "AmbiguousVersion",
+    "DiskVersion",
     "FileverError",
     "NoDriverToken",
     "NoVersionFound",
@@ -22,6 +24,7 @@ __all__ = [
     "VersionToken",
     "bump",
     "discover",
+    "find_on_disk",
     "rewrite_token",
     "set_version",
 ]
