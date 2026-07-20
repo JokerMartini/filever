@@ -6,6 +6,7 @@ Not a pytest test — run with:
 
 from filever import (
     all_versions,
+    config,
     discover,
     earliest_version,
     find_version,
@@ -18,8 +19,7 @@ from filever import (
 )
 
 FP = (
-    "L:/projects/82116_Hyundai_HOW_OOH/_04_shows/HOW/HOW_030"
-    "/light/HOW_030_LIGHT/scenes/HOW_030_LIGHT_v003.max"
+    "C:/Users/joker/trash/versionfiles/HOW_030_light_v008.max"
 )
 
 
@@ -82,3 +82,15 @@ fresh = new_version(FP)
 print(f"latest existing: {fmt(latest)}")
 print(f"next free slot:  {fmt(fresh)}")
 print(f"next free path exists on disk? {fresh.path.exists()}")
+
+rule("loose pad mode (config.strict_pad = False)")
+# Strict mode (default) only surfaces entries whose pad matches the seed's
+# formatter output. Loose mode surfaces every v\d+ entry regardless of pad —
+# useful for projects that mix v01, v006, v0010 styles on disk.
+config.strict_pad = False
+print(f"config.strict_pad = {config.strict_pad}")
+for vf in all_versions(FP):
+    print(f"  pad={vf.version.pad}  {fmt(vf)}")
+print(f"latest_version (loose): {fmt(latest_version(FP))}")
+print(f"new_version   (loose):  {fmt(new_version(FP))}  <- still uses seed pad")
+config.strict_pad = True  # reset so script re-runs are deterministic

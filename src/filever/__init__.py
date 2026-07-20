@@ -1,4 +1,12 @@
-from .discover import PathVersions, discover, find_all_versions, find_version, has_version, split_version
+from . import config
+from .discover import (
+    PathVersions,
+    discover,
+    find_all_versions,
+    find_version,
+    has_version,
+    split_version,
+)
 from .disk import (
     all_versions,
     earliest_version,
@@ -16,7 +24,7 @@ from .errors import (
     UnresolvedPlaceholder,
 )
 from .rewrite import bump, rewrite_token, set_version
-from .tokens import PlaceholderNotation, PlaceholderToken, TokenClass, VersionToken, VersionedFile
+from .tokens import PlaceholderNotation, PlaceholderToken, TokenClass, VersionedFile, VersionToken
 
 __all__ = [
     "AmbiguousVersion",
@@ -32,6 +40,7 @@ __all__ = [
     "VersionedFile",
     "all_versions",
     "bump",
+    "config",
     "discover",
     "earliest_version",
     "find_all_versions",

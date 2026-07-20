@@ -4,10 +4,11 @@ import os
 import re
 from pathlib import Path
 
+from . import config
 from .discover import PathVersions, discover
 from .errors import AmbiguousVersion, NoVersionFound, UnresolvedPlaceholder
 from .rewrite import DriverArg, _global_span, _resolve_driver, _splice, set_version
-from .tokens import VersionToken, VersionedFile
+from .tokens import VersionedFile, VersionToken
 
 
 def _to_pv(pv_or_path: PathVersions | str) -> PathVersions:
@@ -37,7 +38,22 @@ def _parent_of_part(pv: PathVersions, token: VersionToken) -> str:
     return parent
 
 
-def _scan_candidate_entries(pv: PathVersions, driver: VersionToken) -> dict[int, str]:
+def _scan_candidate_entries(
+    pv: PathVersions, driver: VersionToken
+) -> dict[int, tuple[str, int]]:
+    """Return {value: (entry_name, entry_pad)} for entries matching the driver pattern.
+
+    entry_pad is always the literal digit count of the on-disk entry — v1000 is
+    pad 4, v01 is pad 2, v006 is pad 3. No inference, no cleverness.
+
+    In strict mode (config.strict_pad=True, default), only entries whose digits
+    equal f"{value:0{driver.pad}d}" are included (natural pad-overflow like
+    v1000 from pad 3 still passes because the format output matches).
+
+    In loose mode (config.strict_pad=False), entries of any digit width are
+    included. On value collision (same value, different pad), the entry whose
+    pad matches driver.pad wins; otherwise first-alphabetically.
+    """
     part_text, _ = pv.parts[driver.part_index]
     v_start, v_end = driver.span
     prefix = re.escape(part_text[:v_start] + driver.case)
@@ -48,17 +64,21 @@ def _scan_candidate_entries(pv: PathVersions, driver: VersionToken) -> dict[int,
         entries = os.listdir(parent)
     except OSError:
         return {}
-    found: dict[int, str] = {}
+    strict = config.strict_pad
+    found: dict[int, tuple[str, int]] = {}
     for entry in sorted(entries):
         m = entry_re.match(entry)
         if not m:
             continue
         digits = m.group(1)
         value = int(digits)
-        if digits != f"{value:0{driver.pad}d}":
+        entry_pad = len(digits)
+        if strict and digits != f"{value:0{driver.pad}d}":
             continue
         if value not in found:
-            found[value] = entry
+            found[value] = (entry, entry_pad)
+        elif entry_pad == driver.pad and found[value][1] != driver.pad:
+            found[value] = (entry, entry_pad)
     return found
 
 
@@ -86,13 +106,15 @@ def _make_versioned_file(
     candidate_path: str,
     value: int,
     driver_token: VersionToken,
+    entry_pad: int | None = None,
 ) -> VersionedFile:
-    new_raw = driver_token.format(value)
+    pad = entry_pad if entry_pad is not None else driver_token.pad
+    new_raw = f"{driver_token.case}{value:0{pad}d}"
     span_start = driver_token.span[0]
     new_token = VersionToken(
         raw=new_raw,
         value=value,
-        pad=driver_token.pad,
+        pad=pad,
         case=driver_token.case,
         part_index=driver_token.part_index,
         span=(span_start, span_start + len(new_raw)),
@@ -117,7 +139,7 @@ def all_versions(
     result: list[VersionedFile] = []
     seen_reals: set[str] = set()
     for value in sorted(candidates):
-        entry_name = candidates[value]
+        entry_name, entry_pad = candidates[value]
         driver_edit = (driver_part_offset, driver_part_end, entry_name)
         other_edits = [
             (*_global_span(pv, t), t.format(value)) for t in group if t is not driver_token
@@ -132,7 +154,7 @@ def all_versions(
         if real in seen_reals:
             continue
         seen_reals.add(real)
-        result.append(_make_versioned_file(candidate_path, value, driver_token))
+        result.append(_make_versioned_file(candidate_path, value, driver_token, entry_pad))
     return result
 
 

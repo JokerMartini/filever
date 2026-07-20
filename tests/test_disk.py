@@ -9,6 +9,7 @@ from filever import (
     UnresolvedPlaceholder,
     VersionedFile,
     VersionToken,
+    config,
 )
 from filever.disk import (
     all_versions,
@@ -19,6 +20,13 @@ from filever.disk import (
     next_version,
     prev_version,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_strict_pad():
+    saved = config.strict_pad
+    yield
+    config.strict_pad = saved
 
 
 @pytest.fixture
@@ -231,3 +239,65 @@ def test_missing_versions_empty(tmp_path):
     # path doesn't match anything on disk
     result = missing_versions(str(tmp_path / "render_v001.exr"))
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# config.strict_pad — pad-mode scanning
+# ---------------------------------------------------------------------------
+
+
+def test_strict_pad_default_excludes_narrower(tmp_path):
+    """Default (strict) mode drops entries whose pad is narrower than the seed."""
+    (tmp_path / "asset_v01.max").write_text("")
+    (tmp_path / "asset_v006.max").write_text("")
+    seed = str(tmp_path / "asset_v006.max")
+    assert [v.version.value for v in all_versions(seed)] == [6]
+
+
+def test_strict_pad_includes_overflow(tmp_path):
+    """Default (strict) mode includes natural overflow past the seed pad, and the
+    reported pad is the literal digit count of the on-disk entry (v1000 → 4)."""
+    (tmp_path / "asset_v006.max").write_text("")
+    (tmp_path / "asset_v1000.max").write_text("")
+    seed = str(tmp_path / "asset_v006.max")
+    result = all_versions(seed)
+    assert [v.version.value for v in result] == [6, 1000]
+    assert [v.version.pad for v in result] == [3, 4]
+
+
+def test_loose_pad_includes_all_widths(tmp_path):
+    """Loose mode surfaces every v\\d+ entry regardless of pad width."""
+    config.strict_pad = False
+    for name in ("asset_v01.max", "asset_v006.max", "asset_v010.max", "asset_v1000.max"):
+        (tmp_path / name).write_text("")
+    seed = str(tmp_path / "asset_v006.max")
+    result = all_versions(seed)
+    assert [v.version.value for v in result] == [1, 6, 10, 1000]
+    # Per-entry pad is the literal digit count on disk — v1000 is pad 4, not 3.
+    assert [v.version.pad for v in result] == [2, 3, 3, 4]
+
+
+def test_loose_pad_new_version_uses_seed_pad(tmp_path):
+    """new_version always formats using the seed's pad, even in loose mode."""
+    config.strict_pad = False
+    for name in ("asset_v01.max", "asset_v006.max", "asset_v010.max"):
+        (tmp_path / name).write_text("")
+    seed = str(tmp_path / "asset_v006.max")
+    fresh = new_version(seed)
+    # latest on disk is 10, next slot is 11, formatted with seed pad 3 → "v011"
+    assert fresh.version.value == 11
+    assert fresh.version.pad == 3
+    assert str(fresh.path).endswith("asset_v011.max")
+
+
+def test_loose_pad_collision_prefers_seed_pad(tmp_path):
+    """When two entries share a value with different pads, prefer seed-pad match."""
+    config.strict_pad = False
+    (tmp_path / "asset_v01.max").write_text("")
+    (tmp_path / "asset_v001.max").write_text("")
+    seed = str(tmp_path / "asset_v001.max")
+    result = all_versions(seed)
+    assert len(result) == 1
+    assert result[0].version.value == 1
+    assert result[0].version.pad == 3
+    assert str(result[0].path).endswith("asset_v001.max")
