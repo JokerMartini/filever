@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from .errors import NoVersionFound
 from .tokens import PlaceholderNotation, PlaceholderToken, VersionToken
 
 _VERSION_RE = re.compile(r"(?<![A-Za-z0-9])([vV])(\d+)(?![A-Za-z0-9])")
@@ -108,6 +109,37 @@ class PathVersions:
         for v in self.versions:
             result.setdefault(v.part_index, []).append(v)
         return result
+
+
+def find_version(name: str | os.PathLike) -> VersionToken | None:
+    """Return the version token in the filename portion of *name*, or None."""
+    return discover(name).filename_version
+
+
+def has_version(name: str | os.PathLike) -> bool:
+    """Return True if the filename portion of *name* contains a version token."""
+    return find_version(name) is not None
+
+
+def find_all_versions(name: str | os.PathLike) -> list[VersionToken]:
+    """Return all version tokens found in the filename portion of *name*."""
+    pv = discover(name)
+    filename_idx = pv.filename_index
+    return [t for t in pv._all_version_candidates if t.part_index == filename_idx]
+
+
+def split_version(name: str | os.PathLike) -> tuple[str, VersionToken, str]:
+    """Split the filename portion of *name* into (prefix, token, suffix).
+
+    Only the filename segment is examined; folder parts are ignored.
+    Raises NoVersionFound if no version token is present.
+    """
+    pv = discover(name)
+    token = pv.filename_version
+    if token is None:
+        raise NoVersionFound(f"no version token in filename: {os.fspath(name)!r}")
+    filename = pv.parts[pv.filename_index][0]
+    return filename[: token.span[0]], token, filename[token.span[1] :]
 
 
 def discover(path: str | os.PathLike, *, tiebreaker: str = "rightmost") -> PathVersions:

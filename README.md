@@ -8,6 +8,28 @@ Discover, parse, and manipulate `v`-prefixed version numbers in filesystem paths
 uv add filever
 ```
 
+## Quick filename queries
+
+For simple cases where you just need the version from a filename:
+
+```python
+from filever import find_version, has_version, split_version
+
+find_version("char_geo_v015.abc")          # VersionToken(value=15, pad=3, ...)
+find_version("untitled.abc")               # None
+has_version("char_geo_v015.abc")           # True
+
+token = find_version("char_geo_v015.abc")
+token.formatted                            # 'v015'
+token.value                                # 15
+
+prefix, token, suffix = split_version("char_geo_v015.abc")
+# prefix='char_geo_', token=VersionToken(...), suffix='.abc'
+prefix + token.formatted + suffix          # 'char_geo_v015.abc'
+```
+
+`find_version` and friends examine only the filename segment — folder version tokens are ignored. Use `discover()` when you need the full picture.
+
 ## Discover
 
 ```python
@@ -43,6 +65,7 @@ bump("char_v001.png")                                        # 'char_v002.png'
 bump("char_v009.png")                                        # 'char_v010.png'   (width grows)
 bump("char_V002.png")                                        # 'char_V003.png'   (case preserved)
 bump("char_v005.png", by=3)                                  # 'char_v008.png'
+
 bump("/publish/v015/model/char_geo_v015.abc")                # both tokens move
 # → '/publish/v016/model/char_geo_v016.abc'
 
@@ -65,36 +88,51 @@ bump(path, driver="filename")     # '/cache/v5/textures/wood_v3_diffuse.tga'
 ## Scan disk for versions
 
 ```python
-from filever.disk import list_on_disk, latest_on_disk, next_version, previous_version
+from filever import all_versions, latest_version, earliest_version
+from filever import next_version, prev_version, new_version, missing_versions
 
 seed = "/publish/v015/model/char_geo_v015.abc"
 
-list_on_disk(seed)                    # [15, 16, 17, 20]
-latest_on_disk(seed)                  # 20
-next_version(seed)                    # 16  (closest existing above)
-previous_version(seed)                # None
-next_version(seed, exists=False)      # 16  (just current + 1, no disk check)
+all_versions(seed)                # [VersionedFile(v015), VersionedFile(v016), ...]
+latest_version(seed).version.value    # 20
+earliest_version(seed).version.value  # 15
+next_version(seed).version.value      # 16  (closest existing above current)
+prev_version(seed)                    # None  (nothing below v015)
+new_version(seed).version.value       # 21  (latest + 1, does not exist yet)
+missing_versions(seed)                # [18, 19]  (gaps in the sequence)
 ```
 
 Disk scans use the **shallowest** version-bearing part as the anchor. For a path like `/projects/assets/character_v003.mp4` (version only in filename), it lists siblings in the same directory. Symlinks are skipped by default; pass `include_symlinks=True` to include them (deduped against real targets).
 
-### Iterate over versions on disk with full info
+### `VersionedFile` — full path + version token
 
-`find_on_disk` returns `DiskVersion` objects that carry both the version number and the reconstructed path:
+All disk functions return `VersionedFile` objects carrying both the reconstructed path and the version token:
 
 ```python
-from filever import discover, find_on_disk
+from filever import all_versions, discover
 
 pv = discover("/publish/v015/model/char_geo_v015.abc")
-for dv in find_on_disk(pv):
-    print(f"v{dv.value:03d} → {dv.path} (symlink={dv.is_symlink})")
+for vf in all_versions(pv):
+    print(f"{vf.version.formatted} → {vf.path}")
 ```
 
 ```
-v015 → /publish/v015/model/char_geo_v015.abc (symlink=False)
-v016 → /publish/v016/model/char_geo_v016.abc (symlink=False)
-v017 → /publish/v017/model/char_geo_v017.abc (symlink=False)
-v020 → /publish/v020/model/char_geo_v020.abc (symlink=False)
+v015 → /publish/v015/model/char_geo_v015.abc
+v016 → /publish/v016/model/char_geo_v016.abc
+v017 → /publish/v017/model/char_geo_v017.abc
+v020 → /publish/v020/model/char_geo_v020.abc
+```
+
+### `new_version` — the next save slot
+
+`new_version` finds the highest version on disk and proposes `latest + 1`. The returned `VersionedFile` is guaranteed **not** to exist yet — it's the path to write to next:
+
+```python
+vf = new_version("/publish/v015/model/char_geo_v015.abc")
+vf.version.value      # 21  (because v020 is latest on disk)
+vf.version.formatted  # 'v021'
+vf.path               # PosixPath('/publish/v021/model/char_geo_v021.abc')
+vf.path.exists()      # False
 ```
 
 ### `pv.versions` vs disk queries
@@ -104,9 +142,10 @@ v020 → /publish/v020/model/char_geo_v020.abc (symlink=False)
 | Question | Use |
 |---|---|
 | What versions are written into this one filepath? | `pv.versions` |
-| What versions of this asset exist on disk? | `list_on_disk(pv)` or `find_on_disk(pv)` |
-| What's the newest one on disk? | `latest_on_disk(pv)` |
-| What's the next slot to save into? | `next_version(pv, exists=False)` |
+| What versions of this asset exist on disk? | `all_versions(pv)` |
+| What's the newest one on disk? | `latest_version(pv)` |
+| What's the next slot to save into? | `new_version(pv)` |
+| Are there gaps in the version sequence? | `missing_versions(pv)` |
 
 ## Errors
 

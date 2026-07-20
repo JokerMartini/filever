@@ -2,19 +2,12 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from pathlib import Path
 
 from .discover import PathVersions, discover
 from .errors import AmbiguousVersion, NoVersionFound, UnresolvedPlaceholder
-from .rewrite import DriverArg, _global_span, _resolve_driver, _splice
-from .tokens import VersionToken
-
-
-@dataclass(frozen=True)
-class DiskVersion:
-    value: int
-    path: str
-    is_symlink: bool
+from .rewrite import DriverArg, _global_span, _resolve_driver, _splice, set_version
+from .tokens import VersionToken, VersionedFile
 
 
 def _to_pv(pv_or_path: PathVersions | str) -> PathVersions:
@@ -89,12 +82,30 @@ def _driver_and_group(
     return driver_token, group
 
 
-def find_on_disk(
+def _make_versioned_file(
+    candidate_path: str,
+    value: int,
+    driver_token: VersionToken,
+) -> VersionedFile:
+    new_raw = driver_token.format(value)
+    span_start = driver_token.span[0]
+    new_token = VersionToken(
+        raw=new_raw,
+        value=value,
+        pad=driver_token.pad,
+        case=driver_token.case,
+        part_index=driver_token.part_index,
+        span=(span_start, span_start + len(new_raw)),
+    )
+    return VersionedFile(path=Path(candidate_path), version=new_token)
+
+
+def all_versions(
     pv_or_path: PathVersions | str,
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
-) -> list[DiskVersion]:
+) -> list[VersionedFile]:
     pv = _to_pv(pv_or_path)
     _check_no_placeholders(pv)
     driver_token, group = _driver_and_group(pv, driver)
@@ -103,7 +114,7 @@ def find_on_disk(
         return []
     driver_part_text, driver_part_offset = pv.parts[driver_token.part_index]
     driver_part_end = driver_part_offset + len(driver_part_text)
-    result: list[DiskVersion] = []
+    result: list[VersionedFile] = []
     seen_reals: set[str] = set()
     for value in sorted(candidates):
         entry_name = candidates[value]
@@ -121,75 +132,115 @@ def find_on_disk(
         if real in seen_reals:
             continue
         seen_reals.add(real)
-        result.append(DiskVersion(value=value, path=candidate_path, is_symlink=is_link))
+        result.append(_make_versioned_file(candidate_path, value, driver_token))
     return result
 
 
-def list_on_disk(
+def _list_on_disk(
     pv_or_path: PathVersions | str,
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
 ) -> list[int]:
     return [
-        dv.value
-        for dv in find_on_disk(pv_or_path, driver=driver, include_symlinks=include_symlinks)
+        vf.version.value
+        for vf in all_versions(pv_or_path, driver=driver, include_symlinks=include_symlinks)
     ]
 
 
-def latest_on_disk(
+def latest_version(
     pv_or_path: PathVersions | str,
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
-) -> int | None:
-    versions = list_on_disk(pv_or_path, driver=driver, include_symlinks=include_symlinks)
-    return max(versions) if versions else None
+) -> VersionedFile | None:
+    results = all_versions(pv_or_path, driver=driver, include_symlinks=include_symlinks)
+    return max(results, key=lambda v: v.version.value) if results else None
 
 
-def earliest_on_disk(
+def earliest_version(
     pv_or_path: PathVersions | str,
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
-) -> int | None:
-    versions = list_on_disk(pv_or_path, driver=driver, include_symlinks=include_symlinks)
-    return min(versions) if versions else None
+) -> VersionedFile | None:
+    results = all_versions(pv_or_path, driver=driver, include_symlinks=include_symlinks)
+    return min(results, key=lambda v: v.version.value) if results else None
 
 
 def next_version(
     pv_or_path: PathVersions | str,
     *,
     driver: DriverArg = None,
-    exists: bool = True,
     include_symlinks: bool = False,
-) -> int | None:
+) -> VersionedFile | None:
     pv = _to_pv(pv_or_path)
+    _check_no_placeholders(pv)
     driver_token, _ = _driver_and_group(pv, driver)
     current = driver_token.value
-    if not exists:
-        return current + 1
-    _check_no_placeholders(pv)
     higher = [
-        v for v in list_on_disk(pv, driver=driver, include_symlinks=include_symlinks) if v > current
+        v for v in all_versions(pv, driver=driver, include_symlinks=include_symlinks)
+        if v.version.value > current
     ]
-    return min(higher) if higher else None
+    return min(higher, key=lambda v: v.version.value) if higher else None
 
 
-def previous_version(
+def prev_version(
     pv_or_path: PathVersions | str,
     *,
     driver: DriverArg = None,
-    exists: bool = True,
     include_symlinks: bool = False,
-) -> int | None:
+) -> VersionedFile | None:
     pv = _to_pv(pv_or_path)
+    _check_no_placeholders(pv)
     driver_token, _ = _driver_and_group(pv, driver)
     current = driver_token.value
-    if not exists:
-        return current - 1 if current > 0 else None
-    _check_no_placeholders(pv)
     lower = [
-        v for v in list_on_disk(pv, driver=driver, include_symlinks=include_symlinks) if v < current
+        v for v in all_versions(pv, driver=driver, include_symlinks=include_symlinks)
+        if v.version.value < current
     ]
-    return max(lower) if lower else None
+    return max(lower, key=lambda v: v.version.value) if lower else None
+
+
+def new_version(
+    pv_or_path: PathVersions | str,
+    *,
+    driver: DriverArg = None,
+    include_symlinks: bool = False,
+) -> VersionedFile:
+    pv = _to_pv(pv_or_path)
+    _check_no_placeholders(pv)
+    driver_token, _ = _driver_and_group(pv, driver)
+    existing = _list_on_disk(pv, driver=driver, include_symlinks=include_symlinks)
+    base_value = max(existing) if existing else driver_token.value
+    new_value = base_value + 1
+    new_path_str = set_version(pv, new_value, driver=driver)
+    new_pv = discover(new_path_str)
+    token = next(
+        (v for v in new_pv.versions if v.part_index == driver_token.part_index),
+        None,
+    )
+    if token is None:
+        new_raw = driver_token.format(new_value)
+        span_start = driver_token.span[0]
+        token = VersionToken(
+            raw=new_raw,
+            value=new_value,
+            pad=driver_token.pad,
+            case=driver_token.case,
+            part_index=driver_token.part_index,
+            span=(span_start, span_start + len(new_raw)),
+        )
+    return VersionedFile(path=Path(new_path_str), version=token)
+
+
+def missing_versions(
+    pv_or_path: PathVersions | str,
+    *,
+    driver: DriverArg = None,
+    include_symlinks: bool = False,
+) -> list[int]:
+    existing = set(_list_on_disk(pv_or_path, driver=driver, include_symlinks=include_symlinks))
+    if not existing:
+        return []
+    return [v for v in range(min(existing), max(existing) + 1) if v not in existing]

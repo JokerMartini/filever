@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 
 class TokenClass(Enum):
@@ -27,6 +28,16 @@ class VersionToken:
 
     def format(self, value: int) -> str:
         return f"{self.case}{value:0{self.pad}d}"
+
+    @property
+    def formatted(self) -> str:
+        return self.format(self.value)
+
+
+@dataclass(frozen=True)
+class VersionedFile:
+    path: Path
+    version: VersionToken
 
 
 @dataclass(frozen=True)

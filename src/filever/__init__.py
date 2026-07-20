@@ -1,5 +1,13 @@
-from .discover import PathVersions, discover
-from .disk import DiskVersion, find_on_disk
+from .discover import PathVersions, discover, find_all_versions, find_version, has_version, split_version
+from .disk import (
+    all_versions,
+    earliest_version,
+    latest_version,
+    missing_versions,
+    new_version,
+    next_version,
+    prev_version,
+)
 from .errors import (
     AmbiguousVersion,
     FileverError,
@@ -8,11 +16,10 @@ from .errors import (
     UnresolvedPlaceholder,
 )
 from .rewrite import bump, rewrite_token, set_version
-from .tokens import PlaceholderNotation, PlaceholderToken, TokenClass, VersionToken
+from .tokens import PlaceholderNotation, PlaceholderToken, TokenClass, VersionToken, VersionedFile
 
 __all__ = [
     "AmbiguousVersion",
-    "DiskVersion",
     "FileverError",
     "NoDriverToken",
     "NoVersionFound",
@@ -22,9 +29,20 @@ __all__ = [
     "TokenClass",
     "UnresolvedPlaceholder",
     "VersionToken",
+    "VersionedFile",
+    "all_versions",
     "bump",
     "discover",
-    "find_on_disk",
+    "earliest_version",
+    "find_all_versions",
+    "find_version",
+    "has_version",
+    "latest_version",
+    "missing_versions",
+    "new_version",
+    "next_version",
+    "prev_version",
     "rewrite_token",
     "set_version",
+    "split_version",
 ]

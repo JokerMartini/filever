@@ -1,7 +1,8 @@
 import pytest
 
-from filever import discover
-from filever.tokens import PlaceholderNotation
+from filever import discover, find_all_versions, find_version, has_version, split_version
+from filever.errors import NoVersionFound
+from filever.tokens import PlaceholderNotation, VersionToken
 
 
 @pytest.mark.parametrize(
@@ -97,3 +98,114 @@ def test_windows_path():
     pv = discover(r"C:\publish\v015\char.abc")
     assert pv.versions[0].value == 15
     assert pv.versions[0].pad == 3
+
+
+# --- find_version ---
+
+def test_find_version_returns_token():
+    token = find_version("char_geo_v015.abc")
+    assert isinstance(token, VersionToken)
+    assert token.value == 15
+    assert token.pad == 3
+
+
+def test_find_version_returns_none():
+    assert find_version("untitled.abc") is None
+
+
+def test_find_version_full_path_uses_filename():
+    token = find_version("/publish/v010/char_geo_v015.abc")
+    assert token is not None
+    assert token.value == 15
+
+
+def test_find_version_formatted():
+    token = find_version("char_geo_v015.abc")
+    assert token.formatted == "v015"
+
+
+def test_find_version_uppercase():
+    token = find_version("render_V003.exr")
+    assert token is not None
+    assert token.value == 3
+    assert token.case == "V"
+
+
+# --- has_version ---
+
+def test_has_version_true():
+    assert has_version("char_v001.png") is True
+
+
+def test_has_version_false():
+    assert has_version("untitled.png") is False
+
+
+def test_has_version_full_path():
+    assert has_version("/publish/v015/char_geo_v015.abc") is True
+
+
+# --- find_all_versions ---
+
+def test_find_all_versions_multiple():
+    result = find_all_versions("shot_v003_texture_v002.png")
+    assert len(result) == 2
+    assert [t.value for t in result] == [3, 2]
+
+
+def test_find_all_versions_single():
+    result = find_all_versions("char_v001.png")
+    assert len(result) == 1
+    assert result[0].value == 1
+
+
+def test_find_all_versions_none():
+    assert find_all_versions("untitled.png") == []
+
+
+def test_find_all_versions_ignores_folder_tokens():
+    """Only tokens in the filename segment should be returned."""
+    result = find_all_versions("/publish/v015/char_v001_v002.png")
+    assert len(result) == 2
+    assert [t.value for t in result] == [1, 2]
+
+
+# --- split_version ---
+
+def test_split_version_basic():
+    prefix, token, suffix = split_version("char_geo_v015.abc")
+    assert prefix == "char_geo_"
+    assert token.value == 15
+    assert suffix == ".abc"
+
+
+def test_split_version_full_path():
+    prefix, token, suffix = split_version("/publish/v010/char_geo_v015.abc")
+    assert prefix == "char_geo_"
+    assert token.value == 15
+    assert suffix == ".abc"
+
+
+def test_split_version_no_suffix():
+    prefix, token, suffix = split_version("render_v001")
+    assert prefix == "render_"
+    assert token.value == 1
+    assert suffix == ""
+
+
+def test_split_version_no_prefix():
+    prefix, token, suffix = split_version("v001.png")
+    assert prefix == ""
+    assert token.value == 1
+    assert suffix == ".png"
+
+
+def test_split_version_raises_no_version():
+    with pytest.raises(NoVersionFound):
+        split_version("untitled.png")
+
+
+def test_split_version_roundtrip():
+    name = "char_geo_v015.abc"
+    prefix, token, suffix = split_version(name)
+    assert prefix + token.formatted + suffix == name
