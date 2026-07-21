@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import glob
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from . import config
 from .discover import PathVersions, discover
 from .errors import AmbiguousVersion, NoVersionFound, UnresolvedPlaceholder
 from .rewrite import DriverArg, _global_span, _resolve_driver, _splice, set_version
-from .tokens import VersionedFile, VersionToken
+from .tokens import PlaceholderToken, VersionedFile, VersionToken
 
 
 def _to_pv(pv_or_path: PathVersions | str) -> PathVersions:
@@ -18,10 +20,40 @@ def _to_pv(pv_or_path: PathVersions | str) -> PathVersions:
 
 
 def _check_no_placeholders(pv: PathVersions) -> None:
-    if pv.placeholders:
+    """Refuse placeholders in folder parts.
+
+    Filename-position placeholders (####, %04d) are allowed — they're the
+    frame token of a sequence, and disk operations glob-expand them.
+    """
+    filename_idx = pv.filename_index
+    bad = [p for p in pv.placeholders if p.part_index != filename_idx]
+    if bad:
         raise UnresolvedPlaceholder(
-            f"disk operations require a resolved path (no #### or %0Nd tokens): {pv.path!r}"
+            "disk operations require resolved folder parts "
+            f"(no #### or %0Nd inside folder names): {pv.path!r}"
         )
+
+
+def _placeholder_to_glob(placeholder: PlaceholderToken) -> str:
+    """Convert a filename-position PlaceholderToken to a digit-only glob pattern."""
+    return "[0-9]" * placeholder.width
+
+
+def _exists_with_globbing(candidate_path: str, pv: PathVersions) -> bool:
+    """True if candidate_path resolves to at least one real file.
+
+    When the seed's filename contains fileseq-style placeholders (####, %04d),
+    they're replaced with digit-only glob classes and glob.glob is used.
+    Otherwise falls back to os.path.exists (unchanged behaviour).
+    """
+    filename_idx = pv.filename_index
+    fname_holders = [p for p in pv.placeholders if p.part_index == filename_idx]
+    if not fname_holders:
+        return os.path.exists(candidate_path)
+    pattern = candidate_path
+    for ph in fname_holders:
+        pattern = pattern.replace(ph.raw, _placeholder_to_glob(ph), 1)
+    return bool(glob.glob(pattern))
 
 
 def _parent_of_part(pv: PathVersions, token: VersionToken) -> str:
@@ -75,9 +107,9 @@ def _scan_candidate_entries(
         entry_pad = len(digits)
         if strict and digits != f"{value:0{driver.pad}d}":
             continue
-        if value not in found:
-            found[value] = (entry, entry_pad)
-        elif entry_pad == driver.pad and found[value][1] != driver.pad:
+        if value not in found or (
+            entry_pad == driver.pad and found[value][1] != driver.pad
+        ):
             found[value] = (entry, entry_pad)
     return found
 
@@ -127,6 +159,7 @@ def all_versions(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> list[VersionedFile]:
     pv = _to_pv(pv_or_path)
     _check_no_placeholders(pv)
@@ -136,6 +169,13 @@ def all_versions(
         return []
     driver_part_text, driver_part_offset = pv.parts[driver_token.part_index]
     driver_part_end = driver_part_offset + len(driver_part_text)
+    check_exists = exists if exists is not None else lambda p: _exists_with_globbing(p, pv)
+    # When the filename holds a placeholder the candidate_path itself is a glob
+    # template, not a real file — so probe the driver's part on disk for symlink
+    # status instead.
+    has_filename_placeholder = any(
+        p.part_index == pv.filename_index for p in pv.placeholders
+    )
     result: list[VersionedFile] = []
     seen_reals: set[str] = set()
     for value in sorted(candidates):
@@ -145,12 +185,17 @@ def all_versions(
             (*_global_span(pv, t), t.format(value)) for t in group if t is not driver_token
         ]
         candidate_path = _splice(pv.path, [driver_edit, *other_edits])
-        if not os.path.exists(candidate_path):
+        if not check_exists(candidate_path):
             continue
-        is_link = os.path.islink(candidate_path)
+        link_probe = (
+            os.path.normpath(_parent_of_part(pv, driver_token) + "/" + entry_name)
+            if has_filename_placeholder
+            else candidate_path
+        )
+        is_link = os.path.islink(link_probe)
         if is_link and not include_symlinks:
             continue
-        real = os.path.realpath(candidate_path)
+        real = os.path.realpath(link_probe)
         if real in seen_reals:
             continue
         seen_reals.add(real)
@@ -163,10 +208,13 @@ def _list_on_disk(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> list[int]:
     return [
         vf.version.value
-        for vf in all_versions(pv_or_path, driver=driver, include_symlinks=include_symlinks)
+        for vf in all_versions(
+            pv_or_path, driver=driver, include_symlinks=include_symlinks, exists=exists
+        )
     ]
 
 
@@ -175,8 +223,11 @@ def latest_version(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> VersionedFile | None:
-    results = all_versions(pv_or_path, driver=driver, include_symlinks=include_symlinks)
+    results = all_versions(
+        pv_or_path, driver=driver, include_symlinks=include_symlinks, exists=exists
+    )
     return max(results, key=lambda v: v.version.value) if results else None
 
 
@@ -185,8 +236,11 @@ def earliest_version(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> VersionedFile | None:
-    results = all_versions(pv_or_path, driver=driver, include_symlinks=include_symlinks)
+    results = all_versions(
+        pv_or_path, driver=driver, include_symlinks=include_symlinks, exists=exists
+    )
     return min(results, key=lambda v: v.version.value) if results else None
 
 
@@ -195,13 +249,14 @@ def next_version(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> VersionedFile | None:
     pv = _to_pv(pv_or_path)
     _check_no_placeholders(pv)
     driver_token, _ = _driver_and_group(pv, driver)
     current = driver_token.value
     higher = [
-        v for v in all_versions(pv, driver=driver, include_symlinks=include_symlinks)
+        v for v in all_versions(pv, driver=driver, include_symlinks=include_symlinks, exists=exists)
         if v.version.value > current
     ]
     return min(higher, key=lambda v: v.version.value) if higher else None
@@ -212,13 +267,14 @@ def prev_version(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> VersionedFile | None:
     pv = _to_pv(pv_or_path)
     _check_no_placeholders(pv)
     driver_token, _ = _driver_and_group(pv, driver)
     current = driver_token.value
     lower = [
-        v for v in all_versions(pv, driver=driver, include_symlinks=include_symlinks)
+        v for v in all_versions(pv, driver=driver, include_symlinks=include_symlinks, exists=exists)
         if v.version.value < current
     ]
     return max(lower, key=lambda v: v.version.value) if lower else None
@@ -229,11 +285,14 @@ def new_version(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> VersionedFile:
     pv = _to_pv(pv_or_path)
     _check_no_placeholders(pv)
     driver_token, _ = _driver_and_group(pv, driver)
-    existing = _list_on_disk(pv, driver=driver, include_symlinks=include_symlinks)
+    existing = _list_on_disk(
+        pv, driver=driver, include_symlinks=include_symlinks, exists=exists
+    )
     base_value = max(existing) if existing else driver_token.value
     new_value = base_value + 1
     new_path_str = set_version(pv, new_value, driver=driver)
@@ -261,8 +320,11 @@ def missing_versions(
     *,
     driver: DriverArg = None,
     include_symlinks: bool = False,
+    exists: Callable[[str], bool] | None = None,
 ) -> list[int]:
-    existing = set(_list_on_disk(pv_or_path, driver=driver, include_symlinks=include_symlinks))
+    existing = set(
+        _list_on_disk(pv_or_path, driver=driver, include_symlinks=include_symlinks, exists=exists)
+    )
     if not existing:
         return []
     return [v for v in range(min(existing), max(existing) + 1) if v not in existing]

@@ -219,4 +219,11 @@ Original end-use cases, mapped to §6:
 - previous / next on disk → Disk.Previous / Disk.Next
 - increment / decrement without disk check → Disk.Next / Disk.Previous with `exists=False`, or a distinct Increment / Decrement method
 
-On forcing resolved (non-placeholder) paths as input: the pure layer accepts anything — placeholders and versions coexist happily. The **disk layer** should refuse paths whose non-version parts still contain unresolved placeholders (`####`, `%0Nd`), since it can't stat a template. Callers are expected to resolve those to a concrete frame (typically the lowest) before scanning for versions.
+On placeholder handling in disk-layer calls:
+
+- **Folder-part placeholders** (`/render/v###/beauty.exr`) are refused with `UnresolvedPlaceholder` — they have no sequence meaning at the version-enumeration layer.
+- **Filename-part placeholders** (`/render/v001/beauty.####.exr`, `/render/v001/beauty.%04d.exr`) are accepted and switch the existence check to sequence-aware mode. The placeholder is converted to a digit-only glob (`####` → `[0-9][0-9][0-9][0-9]`) and `glob.glob` is used to test whether any frame satisfies the pattern in the target folder. This solves the "v015 renders start at frame 1005 but seed used frame 1001" case cleanly: any frame in v015's sequence counts as v015 existing.
+- **Concrete numeric filenames** keep exact-frame semantics (`os.path.exists` on the reconstructed path), so pipelines that legitimately want to check for a specific frame per version still work unchanged. The caller opts into sequence semantics by writing the placeholder explicitly.
+- **`exists=` callable** — every disk-layer function accepts an optional `exists: Callable[[str], bool]` that overrides the built-in check entirely. Callers with unusual existence semantics (companion metadata files, remote stores, `fileseq.findSequenceOnDisk` proper) plug in their own predicate.
+
+The returned `VersionedFile.path` preserves the placeholder as-is when the seed had one, so callers can hand it directly to `fileseq.findSequenceOnDisk(str(vf.path))` for frame enumeration. Filever stays out of the frame-range business; that remains fileseq's job.

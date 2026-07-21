@@ -135,6 +135,66 @@ vf.path               # PosixPath('/publish/v021/model/char_geo_v021.abc')
 vf.path.exists()      # False
 ```
 
+### Sequences — using `####` or `%04d` in the frame position
+
+When your file is one frame of an image sequence, different versions often cover different frame ranges — v015 might start at frame 1005 while v001 started at 1001. A literal frame in the seed asks "does this exact frame exist in each version?" and silently misses versions that don't have it.
+
+Replace the frame with a fileseq-style placeholder (`####` or `%04d`) to switch to sequence-aware existence: any frame in that version counts.
+
+```python
+from filever import all_versions, latest_version, new_version
+
+seed = "/render/HOW_030/v001/beauty.####.exr"
+
+for vf in all_versions(seed):
+    print(f"{vf.version.formatted} → {vf.path}")
+# v001 → /render/HOW_030/v001/beauty.####.exr
+# v002 → /render/HOW_030/v002/beauty.####.exr
+# v015 → /render/HOW_030/v015/beauty.####.exr    ← now visible even if frames start at 1005
+# v020 → /render/HOW_030/v020/beauty.####.exr
+```
+
+The returned `VersionedFile.path` keeps the placeholder — hand it straight to `fileseq` to enumerate frames:
+
+```python
+import fileseq
+for vf in all_versions(seed):
+    seq = fileseq.findSequenceOnDisk(str(vf.path))
+    print(f"{vf.version.formatted}: {seq.frameRange()}")
+# v001: 1001-1100
+# v015: 1005-1150
+# v020: 1010-1200
+```
+
+Concrete frame numbers still work — they just keep exact-frame semantics:
+
+```python
+all_versions("/render/HOW_030/v001/beauty.1001.exr")   # only versions with frame 1001
+all_versions("/render/HOW_030/v001/beauty.####.exr")   # any version whose sequence exists
+```
+
+Placeholders in **folder** parts remain rejected (they have no sequence meaning):
+
+```python
+all_versions("/render/v###/beauty.####.exr")   # raises UnresolvedPlaceholder
+```
+
+### `exists=` — custom existence semantics
+
+If you need something other than filesystem `os.path.exists` / glob (a companion metadata file, a database check, a remote store), pass an `exists=` callable. It receives the reconstructed path and returns a bool.
+
+```python
+from pathlib import Path
+
+def has_publish_marker(path: str) -> bool:
+    return (Path(path).parent / "publish.json").exists()
+
+for vf in all_versions(seed, exists=has_publish_marker):
+    print(vf.version.formatted)   # only versions that have a publish.json
+```
+
+`exists=` works on every disk function (`latest_version`, `new_version`, etc.).
+
 ### `pv.versions` vs disk queries
 
 `pv.versions` and the disk-scan functions answer *different* questions. `pv.versions` reports what version tokens appear inside the single path string you gave it — no filesystem access. The disk functions read the filesystem and report which versions of the asset actually exist there.
@@ -152,7 +212,7 @@ vf.path.exists()      # False
 - `AmbiguousVersion` — grouped op on a mismatched path with no `driver=`.
 - `NoDriverToken` — `driver="folder"` on a path that has no folder version.
 - `NoVersionFound` — no `v\d+` anywhere on the path.
-- `UnresolvedPlaceholder` — disk op on a path with `####` or `%03d` still present.
+- `UnresolvedPlaceholder` — disk op on a path with `####` or `%03d` in a folder part. Filename-position placeholders are allowed (they enable sequence-aware scans).
 
 All inherit from `FileverError`.
 

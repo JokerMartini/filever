@@ -142,9 +142,10 @@ def test_no_versions_raises(tmp_path):
         all_versions(str(tmp_path / "no_version.txt"))
 
 
-def test_placeholder_raises(tmp_path):
+def test_folder_placeholder_raises(tmp_path):
+    """Placeholders in folder parts are still rejected — they have no sequence meaning."""
     with pytest.raises(UnresolvedPlaceholder):
-        all_versions(str(tmp_path / "render_%03d.jpg"))
+        all_versions(str(tmp_path / "v###" / "render_v001.exr"))
 
 
 def test_ambiguous_mismatch_raises(tmp_path):
@@ -301,3 +302,86 @@ def test_loose_pad_collision_prefers_seed_pad(tmp_path):
     assert result[0].version.value == 1
     assert result[0].version.pad == 3
     assert str(result[0].path).endswith("asset_v001.max")
+
+
+# ---------------------------------------------------------------------------
+# Sequence-aware existence via filename placeholders
+# ---------------------------------------------------------------------------
+
+
+def _make_seq(base: Path, version: int, frames: range) -> None:
+    d = base / f"v{version:03d}"
+    d.mkdir()
+    for f in frames:
+        (d / f"beauty.{f:04d}.exr").write_text("")
+
+
+def test_sequence_hash_placeholder_finds_offset_frames(tmp_path):
+    """With ####, versions with different frame ranges all surface."""
+    _make_seq(tmp_path, 1, range(1001, 1006))    # frames 1001-1005
+    _make_seq(tmp_path, 15, range(1010, 1016))   # frames 1010-1015 (no 1001)
+    seed = str(tmp_path / "v001" / "beauty.####.exr")
+    result = all_versions(seed)
+    assert [v.version.value for v in result] == [1, 15]
+
+
+def test_sequence_printf_placeholder(tmp_path):
+    """%04d works the same as #### for sequence-aware scans."""
+    _make_seq(tmp_path, 1, range(1001, 1006))
+    _make_seq(tmp_path, 15, range(1010, 1016))
+    seed = str(tmp_path / "v001" / "beauty.%04d.exr")
+    result = all_versions(seed)
+    assert [v.version.value for v in result] == [1, 15]
+
+
+def test_folder_placeholder_still_raises(tmp_path):
+    """Placeholders in folder positions still raise UnresolvedPlaceholder."""
+    seed = str(tmp_path / "v###" / "beauty.####.exr")
+    with pytest.raises(UnresolvedPlaceholder):
+        all_versions(seed)
+
+
+def test_concrete_frame_path_behaviour_unchanged(tmp_path):
+    """A literal frame number stays exact-frame semantics (misses v15 with different range)."""
+    _make_seq(tmp_path, 1, range(1001, 1006))
+    _make_seq(tmp_path, 15, range(1010, 1016))
+    seed = str(tmp_path / "v001" / "beauty.1001.exr")
+    result = all_versions(seed)
+    # v015 has no frame 1001, so it's dropped under exact-frame semantics.
+    assert [v.version.value for v in result] == [1]
+
+
+def test_exists_callable_override(tmp_path):
+    """A custom exists= predicate overrides the default existence check."""
+    _make_seq(tmp_path, 1, range(1001, 1003))
+    _make_seq(tmp_path, 2, range(1001, 1003))
+    (tmp_path / "v001" / "publish.json").write_text("")  # only v001 has a publish marker
+    seed = str(tmp_path / "v001" / "beauty.1001.exr")
+
+    def has_publish(path: str) -> bool:
+        return (Path(path).parent / "publish.json").exists()
+
+    result = all_versions(seed, exists=has_publish)
+    assert [v.version.value for v in result] == [1]
+
+
+def test_versioned_file_path_preserves_placeholder(tmp_path):
+    """When the seed had a placeholder, VersionedFile.path keeps it (pattern in, pattern out)."""
+    _make_seq(tmp_path, 1, range(1001, 1006))
+    _make_seq(tmp_path, 2, range(1001, 1006))
+    seed = str(tmp_path / "v001" / "beauty.####.exr")
+    result = all_versions(seed)
+    for vf in result:
+        assert "####" in str(vf.path)
+        assert str(vf.path).endswith("beauty.####.exr")
+
+
+def test_sequence_digit_only_glob_rejects_non_digits(tmp_path):
+    """The #### -> [0-9][0-9][0-9][0-9] conversion should not match letters."""
+    d = tmp_path / "v001"
+    d.mkdir()
+    (d / "beauty.abcd.exr").write_text("")  # 4 chars, but not digits
+    seed = str(tmp_path / "v001" / "beauty.####.exr")
+    # Nothing satisfies "any 4-digit frame" — v001 should be missing.
+    result = all_versions(seed)
+    assert result == []
